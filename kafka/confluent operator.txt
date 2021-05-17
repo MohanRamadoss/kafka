@@ -1,0 +1,448 @@
+https://github.com/confluentinc/confluent-kubernetes-examples/tree/master/security/secure-authn-encrypt-deploy
+
+
+
+gcloud beta container --project "k8mohan" clusters create "confluent" --zone "us-central1-a" --no-enable-basic-auth --cluster-version "1.18.16-gke.2100" --release-channel "regular" --machine-type "e2-custom-4-16384" --image-type "COS" --disk-type "pd-standard" --disk-size "100" --metadata disable-legacy-endpoints=true --scopes "https://www.googleapis.com/auth/devstorage.read_only","https://www.googleapis.com/auth/logging.write","https://www.googleapis.com/auth/monitoring","https://www.googleapis.com/auth/servicecontrol","https://www.googleapis.com/auth/service.management.readonly","https://www.googleapis.com/auth/trace.append" --num-nodes "3" --enable-stackdriver-kubernetes --enable-ip-alias --network "projects/k8mohan/global/networks/default" --subnetwork "projects/k8mohan/regions/us-central1/subnetworks/default" --no-enable-intra-node-visibility --default-max-pods-per-node "110" --no-enable-master-authorized-networks --addons HorizontalPodAutoscaling,HttpLoadBalancing,GcePersistentDiskCsiDriver --enable-autoupgrade --enable-autorepair --max-surge-upgrade 1 --max-unavailable-upgrade 0 --enable-shielded-nodes --node-locations "us-central1-a"
+gcloud container clusters get-credentials confluent --zone us-central1-a --project k8mohan
+
+gcloud container clusters get-credentials kafka --zone us-central1-a --project k8mohan
+
+kubectl create namespace operator
+
+kubectl create -f resources/crds/ -n operator
+kubectl create -f resources/rbac/ -n operator
+
+
+Step 1. Install Confluent Operator
+
+
+  
+helm upgrade --install   operator   ./confluent-operator    --values  providers/gcp.yaml   --namespace operator  --set operator.enabled=true
+
+echo "After Operator Installation: Check all pods..."
+
+
+  1. Validate if Confluent Operator is running.
+
+  kubectl get pods -n operator | grep cc-operator
+
+  2. Validate if custom resource definition (CRD) is created.
+
+  kubectl get crd | grep confluent
+  
+
+kubectl get pods -n operator
+kubectl rollout status deployment -n operator cc-operator
+kubectl get crd | grep confluent
+
+
+
+Step 2. Install ZooKeeper
+
+helm upgrade --install   zookeeper   ./confluent-operator   --values  providers/gcp.yaml  --namespace operator   --set zookeeper.enabled=true
+
+. List of Deprecated Features (if any)
+
+
+  1. Validate if Zookeeper Custom Resource (CR) is created
+
+     kubectl get zookeeper -n operator | grep zookeeper
+
+  2. Check the status/events of CR: zookeeper
+
+     kubectl describe zookeeper zookeeper -n operator
+
+  3. Check if Zookeeper cluster is Ready
+
+     kubectl get zookeeper zookeeper -ojson -n operator
+
+     kubectl get zookeeper zookeeper -ojsonpath='{.status.phase}' -n operator
+
+  4. Update/Upgrade Zookeeper Cluster
+
+     The upgrade can be done either through the helm upgrade or by editing the CR directly as below;
+
+     kubectl edit zookeeper zookeeper  -n operator
+
+Note: For Openshift Platform replace kubectl commands with 'oc' commands. If OpenShift Route enabled, port will be either 80/443
+ramadoss_mohan@cloudshell:~/confluent/helm (k8mohan)$
+
+kubectl get pods -n operator
+
+kubectl rollout status sts -n operator zookeeper
+
+
+
+Step 3. Install Kafka brokers
+
+
+helm upgrade --install   kafka   ./confluent-operator   --values providers/gcp.yaml  --namespace operator --set kafka.enabled=true
+
+
+
+
+Kafka Cluster is deployed to kubernetes through CR Object
+
+  0. List of Deprecated Features (if any)
+
+
+  1. Validate if Kafka Custom Resource (CR) is created
+
+     kubectl get kafka -n operator | grep kafka
+
+  2. Check the status/events of CR: kafka
+
+     kubectl describe kafka kafka -n operator
+
+  3. Check if Kafka cluster is Ready
+
+     kubectl get kafka kafka -ojson -n operator
+
+     kubectl get kafka kafka -ojsonpath='{.status.phase}' -n operator
+
+  4.  Broker Listener (Protocol/Port)
+
+      External Listener: kubectl  -n operator  get kafka kafka -ojsonpath='{.status.brokerExternalListener}'
+      Internal Listener: kubectl  -n operator  get kafka kafka -ojsonpath='{.status.brokerInternalListener}'
+
+      Note: If Protocol is SSL, configure truststore (https://docs.confluent.io/current/kafka/encryption.html#clients) and keystore
+        (https://docs.confluent.io/current/kafka/authentication_ssl.html#clients) if client Authentication is enabled (
+        kubectl  -n operator  get kafka kafka -ojsonpath='{.status.clientAuthentication}' )
+
+  5. Update/Upgrade Kafka Cluster
+
+     The upgrade can be done either through the helm upgrade or by editing the CR directly as below;
+
+     kubectl edit kafka kafka  -n operator
+
+     Note: Switching Kafka security requires manual restart of all the dependent components as the JAAS configuration changes is required.
+
+  6. All Kafka Information like zookeeper connect, replications factor, isr, Client Jaas Configuration
+     and much more can be found on the Status section of CR.
+
+     kubectl get kafka kafka -n operator -oyaml
+
+  7. Client Access:
+
+     Run below command to validate if Kafka cluster is working.
+
+     1. Get the Client Jaas Information
+        Internal : kubectl  -n operator  get kafka kafka -ojsonpath='{.status.internalClient}' > kafka.properties
+     2. To get the Bootstrap endpoint
+
+        kubectl -n operator get kafka kafka -ojsonpath='{.status.bootstrapEndpoint}'
+
+     3. To get the Replication Factor
+
+        kubectl -n operator get kafka kafka -ojsonpath='{.status.replicationFactor}'
+
+     4. To get the Zookeeper Connect endpoint
+
+        kubectl -n operator get kafka kafka -ojsonpath='{.status.zookeeperConnect}'
+
+
+
+      Internal:
+
+        - Go to one of the Kafka Pods
+
+          kubectl -n operator exec -it kafka-0 bash
+
+        - Inside the pod, run below command
+
+cat <<EOF > kafka.properties
+## Copy information from kafka.properties available in step 7 (Client Access) step 1.
+EOF
+            + Check brokers API versions
+
+              Get <bootstrapEndpoint> from step 2
+
+              kafka-broker-api-versions --command-config kafka.properties --bootstrap-server <bootstrapEndpoint>
+
+            + Run command to create topic
+
+              Get <replicationFactor> from step 3
+              Get <zookeeperConnect> from step 4
+
+              kafka-topics --create --zookeeper <zookeeperConnect> --replication-factor <replicationFactor> --partitions 1 --topic example
+
+              Note: Above command only works inside the kubernetes network
+
+            + Run command to Publish events on topic example
+
+              Get <bootstrapEndpoint> from step 2
+
+              seq 10000 | kafka-console-producer --topic example --broker-list <bootstrapEndpoint> --producer.config kafka.properties
+
+            + Run command to Consume events on topic example (run in different terminal)
+
+              Get <bootstrapEndpoint> from step 2
+
+              kafka-console-consumer --from-beginning --topic example --bootstrap-server  <bootstrapEndpoint> --consumer.config kafka.properties
+
+Note: For Openshift Platform replace kubectl commands with 'oc' commands. If OpenShift Route enabled, port will be either 80/443
+
+
+
+
+Step 4. Install Schema Registry
+
+
+echo "Install Confluent Schema Registry"
+#schemaregistry
+helm upgrade --install \
+schemaregistry \
+./confluent-operator -f ${MYDIR}/${PROVIDER}/${PROVIDER}.yaml \
+--namespace operator \
+--set schemaregistry.enabled=true
+echo "After Schema Registry Installation: Check all pods..."
+kubectl get pods -n operator
+sleep 10
+kubectl rollout status sts -n operator schemaregistry
+
+
+
+helm upgrade --install schemaregistry   ./confluent-operator   --values providers/gcp.yaml   --namespace operator   --set schemaregistry.enabled=true
+
+
+NOTES:
+Schema Registry is deployed through PSC. Configure Schema Registry through REST Endpoint
+
+  0. List of Deprecated Features (if any)
+
+
+  1. Validate if schema registry cluster is running
+
+     kubectl get pods -n operator | grep schemaregistry
+
+  2. Access
+    Internal REST Endpoint : http://schemaregistry:8081  (Inside kubernetes)
+
+    OR
+
+    http://localhost:8081 (Inside Pod)
+
+    More information about schema registry REST API can be found here,
+
+    https://docs.confluent.io/current/schema-registry/docs/api.html
+
+Note: For Openshift Platform replace kubectl commands with 'oc' commands. If OpenShift Route enabled, port will be either 80/443
+ramadoss_mohan@cloudshell:~/confluent/helm (k8mohan)$
+
+
+
+
+Step 5. Install Kafka Connect
+
+
+
+echo "Install Confluent Connect"
+# Kafka Connect
+helm upgrade --install \
+connect \
+./confluent-operator -f ${MYDIR}/${PROVIDER}/${PROVIDER}.yaml \
+--namespace operator \
+--set connect.enabled=true
+echo "After Kafka Connect Installation: Check all pods..."
+kubectl get pods -n operator
+sleep 10
+kubectl rollout status sts -n operator connect
+
+
+helm upgrade --install  connectors    ./confluent-operator  --values providers/gcp.yaml   --namespace operator   --set connect.enabled=true
+
+
+
+
+
+
+
+Step 6. Install Confluent Replicator
+
+helm upgrade --install    replicator   ./confluent-operator  --values providers/gcp.yaml     --namespace operator   --set replicator.enabled=true
+
+kubectl get pods -n operator
+
+
+
+
+Step 7. Install Confluent Control Center
+
+helm upgrade --install   controlcenter   ./confluent-operator --values providers/gcp.yaml  --namespace operator   --set controlcenter.enabled=true
+
+
+
+echo "Install Confluent Control Center"
+# controlcenter
+helm upgrade --install \
+controlcenter \
+./confluent-operator  -f ${MYDIR}/${PROVIDER}/${PROVIDER}.yaml \
+--namespace operator \
+--set controlcenter.enabled=true
+echo "After Control Center Installation: Check all pods..."
+kubectl get pods -n operator
+sleep 10
+kubectl rollout status sts -n operator controlcenter
+
+
+
+KSQL is deployed through PSC
+
+   0. List of Deprecated Features (if any)
+
+
+   1. Validate if ksql is running
+
+     kubectl get pods -n operator | grep ksql
+
+   2. Access
+      Internal: http://ksql:8088 (Inside kubernetes)
+
+      OR
+
+      http://localhost:8088 (Inside Pod)
+
+
+
+Step 8. Install ksqlDB
+
+helm upgrade --install   ksql   ./confluent-operator   --values providers/gcp.yaml  --namespace operator   --set ksql.enabled=true
+
+
+
+echo "Install Confluent KSQL"
+# ksql
+helm upgrade --install \
+ksql \
+./confluent-operator  -f ${MYDIR}/${PROVIDER}/${PROVIDER}.yaml \
+--namespace operator \
+--set ksql.enabled=true 
+echo "After KSQL Installation: Check all pods..."
+kubectl get pods -n operator
+sleep 10
+kubectl rollout status sts -n operator ksql
+
+
+
+KSQL is deployed through PSC
+
+   0. List of Deprecated Features (if any)
+
+
+   1. Validate if ksql is running
+
+     kubectl get pods -n operator | grep ksql
+
+   2. Access
+      Internal: http://ksql:8088 (Inside kubernetes)
+
+      OR
+
+      http://localhost:8088 (Inside Pod)
+
+
+
+
+
+
+
+Step 9. Test the deployment
+Complete the following steps to test and validate your deployment.
+
+Internal access validation
+Complete the following steps to validate internal communication.
+
+On your local machine, enter the following command to display cluster namespace information (using the example namespace operator). This information contains the bootstrap endpoint you need to complete internal validation.
+
+kubectl get kafka -n operator -oyaml
+The bootstrap endpoint is shown on the bootstrap.servers line.
+
+... omitted
+
+   internalClient: |-
+      bootstrap.servers=kafka:9071
+On your local machine, use kubectl exec to start a bash session on one of the pods in the cluster. The example uses the default pod name kafka-0 on a Kafka cluster using the default name kafka.
+
+kubectl -n operator exec -it kafka-0 bash
+On the pod, create and populate a file named kafka.properties. There is no text editor installed in the containers, so you use the cat command as shown below to create this file. Use CTRL+D to save the file.
+
+Note
+
+The example shows default SASL/PLAIN security parameters. A production environment requires additional security. See Configure Security with Confluent Operator for additional information.
+
+cat << EOF > kafka.properties
+bootstrap.servers=kafka:9071
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="test" password="test123";
+sasl.mechanism=PLAIN
+security.protocol=SASL_PLAINTEXT
+EOF
+On the pod, query the bootstrap server using the following command:
+
+kafka-broker-api-versions --command-config kafka.properties --bootstrap-server kafka:9071
+You should see output for each of the three Kafka brokers that resembles the following:
+
+kafka-1.kafka.operator.svc.cluster.local:9071 (id: 1 rack: 0) -> (
+   Produce(0): 0 to 7 [usable: 7],
+   Fetch(1): 0 to 10 [usable: 10],
+   ListOffsets(2): 0 to 4 [usable: 4],
+   Metadata(3): 0 to 7 [usable: 7],
+   LeaderAndIsr(4): 0 to 1 [usable: 1],
+   StopReplica(5): 0 [usable: 0],
+   UpdateMetadata(6): 0 to 4 [usable: 4],
+   ControlledShutdown(7): 0 to 1 [usable: 1],
+   OffsetCommit(8): 0 to 6 [usable: 6],
+   OffsetFetch(9): 0 to 5 [usable: 5],
+   FindCoordinator(10): 0 to 2 [usable: 2],
+   JoinGroup(11): 0 to 3 [usable: 3],
+   Heartbeat(12): 0 to 2 [usable: 2],
+
+... omitted
+This output validates internal communication within your cluster.
+
+
+
+
+Complete install 
+
+ helm upgrade --install   operator   ./confluent-operator    --values  providers/gcp.yaml   --namespace operator  --set operator.enabled=true
+ helm upgrade --install   zookeeper   ./confluent-operator   --values  providers/gcp.yaml  --namespace operator   --set zookeeper.enabled=true
+ helm upgrade --install   kafka   ./confluent-operator   --values providers/gcp.yaml  --namespace operator --set kafka.enabled=true
+ helm upgrade --install schemaregistry   ./confluent-operator   --values providers/gcp.yaml   --namespace operator   --set schemaregistry.enabled=true
+ helm upgrade --install  connectors    ./confluent-operator  --values providers/gcp.yaml   --namespace operator   --set connect.enabled=true
+ helm upgrade --install    replicator   ./confluent-operator  --values providers/gcp.yaml     --namespace operator   --set replicator.enabled=true
+ helm upgrade --install   controlcenter   ./confluent-operator --values providers/gcp.yaml  --namespace operator   --set controlcenter.enabled=true
+ helm upgrade --install   ksql   ./confluent-operator   --values providers/gcp.yaml  --namespace operator   --set ksql.enabled=true
+  
+
+
+
+
+
+To remove 
+
+helm uninstall operator --namespace operator
+helm uninstall zookeeper --namespace operator
+helm uninstall kafka --namespace operator
+helm uninstall schemaregistry --namespace operator
+helm uninstall connectors --namespace operator
+helm uninstall replicator --namespace operator
+helm uninstall controlcenter --namespace operator
+helm uninstall ksql --namespace operator
+
+
+
+
+Adding storage classs 
+
+global:
+  provider:
+  kubernetes:
+    deployment:
+      zones:
+        - us-central1-a
+    storageClassName:""                 ----- [1]
+    storage:                            ----- [2]
+      provisioner: kubernetes.io/gce-pd
+      allowVolumeExpansion:             ----- [3]
+      parameters:
+        type: pd-ssd
